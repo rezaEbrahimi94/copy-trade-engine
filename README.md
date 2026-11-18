@@ -11,6 +11,30 @@ Follower { id, balance, remainingAllocation, copyingEnabled }
 processCopyTrade(trade, follower) -> copied | duplicate | rejected(reason)
 ```
 
+**Release [v1.0.0](https://github.com/rezaEbrahimi94/copy-trade-engine/releases/tag/v1.0.0)** ·
+**[Full demo video (6 min)](https://github.com/rezaEbrahimi94/copy-trade-engine/releases/download/v1.0.0/copy-trade-full-demo.mp4)**:
+every scenario running in the UI and every test suite running in a terminal, with a caption per
+section.
+
+## Assessment scenarios
+
+Each scenario is demonstrated in the UI and in the video, and enforced by automated tests.
+
+| Scenario                                                        | Demonstrated                                                         | Tested                                                                                                                                                                                         |
+| --------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Normal copy: 10,000 / 2,000 follower copies a 700 trade      | UI "Scenarios" panel; video 0:05                                     | `packages/domain/test/copy-trade.test.ts`, `packages/db/test/copy-trade-concurrency.test.ts`, `e2e/scenarios.spec.ts` (1)                                                                      |
+| 2. Same trade twice, sequential and concurrent: one copy        | UI "Scenarios" panel; video 0:05                                     | `packages/db/test/copy-trade-concurrency.test.ts` (scenario 2, 50 concurrent identical), property test in `packages/domain/test/copy-trade.property.test.ts`, `e2e/scenarios.spec.ts` (2a, 2b) |
+| 3. Two concurrent 700 trades on 1,000 / 1,000: exactly one      | UI "Scenarios" panel; video 0:05                                     | `packages/db/test/copy-trade-concurrency.test.ts` (scenario 3, N=40, negative control without the row lock), `e2e/scenarios.spec.ts` (3)                                                       |
+| Rejections: disabled, balance, allocation, amount, self-copy    | UI "Scenarios" panel; video 0:05                                     | `packages/domain/test/copy-trade.test.ts`, `e2e/scenarios.spec.ts`                                                                                                                             |
+| Several API replicas behind a load balancer, one Postgres       | UI "Multiple API replicas" panel (served-by per request); video 1:00 | `apps/api/test/integration/multi-process.integration.test.ts`, `e2e/multi-replica.spec.ts`, `pnpm load` (video 5:22)                                                                           |
+| Event bus: Redpanda, worker consumer group, redelivery, DLQ     | UI "Event bus" panel and Redpanda Console; video 1:21 and 3:07       | `apps/worker/test/integration/event-bus.test.ts` (redelivery, duplicate events, cross-worker 700/700, negative control, rebalance, DLQ), `e2e/event-bus.spec.ts`                               |
+| Worker killed mid-run: rebalance, nothing lost or applied twice | UI "Instances" panel and Console consumer group; video 2:11 and 5:40 | `apps/worker/test/integration/event-bus.test.ts` (SIGKILL of a worker process), `LOAD_KILL_WORKER=copy-trade-worker-2 pnpm load` (also in CI)                                                  |
+| Ledger reconciliation after every run                           | UI "Reconciliation" panel and line                                   | `packages/db/test/execution-and-reconciliation.test.ts` (incl. tamper detection), invariant checks at the end of `pnpm load`                                                                   |
+
+The test suites themselves (lint and typecheck, unit + property with coverage, Testcontainers
+integration, Playwright e2e and Stryker mutation) run on screen from video 3:23. Why each
+guarantee holds is explained in [Architecture](#architecture) below.
+
 ## Quick start (only Docker required)
 
 ```bash
