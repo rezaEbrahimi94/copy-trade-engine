@@ -1,0 +1,66 @@
+# `docker compose up --build` -> Postgres, migrations, API and UI.
+# UI: http://localhost:${WEB_PORT:-8080}   API: http://localhost:${API_PORT:-3000}
+name: copy-trade
+
+x-database-url: &database-url postgres://${POSTGRES_USER:-copytrade}:${POSTGRES_PASSWORD:-copytrade}@postgres:5432/${POSTGRES_DB:-copytrade}
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-copytrade}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-copytrade}
+      POSTGRES_DB: ${POSTGRES_DB:-copytrade}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  migrate:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    image: copy-trade-api:local
+    command: ['node', 'dist/jobs/migrate.mjs']
+    environment:
+      DATABASE_URL: *database-url
+      LOG_LEVEL: info
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: 'no'
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    image: copy-trade-api:local
+    environment:
+      DATABASE_URL: *database-url
+      HOST: 0.0.0.0
+      PORT: 3000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      CORS_ORIGIN: http://localhost:${WEB_PORT:-8080}
+      DB_POOL_MAX: ${DB_POOL_MAX:-20}
+      OUTBOX_POLL_INTERVAL_MS: ${OUTBOX_POLL_INTERVAL_MS:-1000}
+      RECONCILIATION_INTERVAL_MS: ${RECONCILIATION_INTERVAL_MS:-30000}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      - '${API_PORT:-3000}:3000'
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  web:
+    build: { context: ., dockerfile: apps/web/Dockerfile }
+    image: copy-trade-web:local
+    environment:
+      API_UPSTREAM: http://api:3000
+    ports:
+      - '${WEB_PORT:-8080}:80'
+    depends_on:
+      api: { condition: service_healthy }
+    restart: unless-stopped
+
+volumes:
+  pgdata:

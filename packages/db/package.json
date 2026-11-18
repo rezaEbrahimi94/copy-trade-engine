@@ -1,0 +1,21 @@
+{
+  "name": "@copy-trade/db",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@copy-trade/application": "workspace:*",
+    "@copy-trade/domain": "workspace:*",
+    "kysely": "0.29.9",
+    "pg": "8.23.1"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
+  }
+}
