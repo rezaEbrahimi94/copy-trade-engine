@@ -237,9 +237,10 @@ async function phaseEventBus(workers: number) {
     'one processed record per event id (inbox)',
   );
   const used = new Set(requests.map((r) => r.processed?.handledBy));
+  const expectedWorkers = KILL_WORKER === undefined ? workers : workers - 1;
   check(
-    used.size === workers,
-    `all ${String(workers)} workers processed events (${[...used].sort().join(', ')})`,
+    used.size >= expectedWorkers,
+    `${String(used.size)} of ${String(workers)} workers processed events (${[...used].sort().join(', ')})`,
   );
 
   const attempted = new Map(followers.map((f) => [f.id, new Set(tradeIds)]));

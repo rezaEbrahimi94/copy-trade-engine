@@ -275,13 +275,14 @@ for every variable and its default.
 
 ## Verification results (latest run)
 
-| Suite                                    | Result                                                                                       |
-| ---------------------------------------- | -------------------------------------------------------------------------------------------- |
-| Unit + property (Vitest, fast-check)     | 125 tests passed                                                                             |
-| Coverage                                 | 100% statements / lines / functions, 97.56% branches overall; 100% on domain and application |
-| Integration (Testcontainers Postgres 17) | 39 tests passed, incl. 3-process test and negative controls                                  |
-| Mutation (Stryker)                       | 99.64% (273 killed, 3 timeout, 1 equivalent survivor)                                        |
-| E2E (Playwright vs compose stack)        | 10 tests passed                                                                              |
+| Suite                                | Result                                                                                    |
+| ------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Unit + property (Vitest, fast-check) | 185 tests passed (19 files)                                                               |
+| Coverage                             | 99.6% statements, 95.96% branches, 99.32% functions, 99.78% lines                         |
+| Integration (Testcontainers)         | 58 tests passed (Postgres 17 + Redpanda), incl. worker SIGKILL, DLQ and negative controls |
+| Mutation (Stryker)                   | 99.77% (425 killed, 7 timeout, 1 equivalent survivor)                                     |
+| E2E (Playwright vs compose stack)    | 13 tests passed                                                                           |
+| Load (`pnpm load`)                   | All invariants hold and reconciliation is clean, also with a worker SIGKILLed mid-drain   |
 
 ### Note for some Linux VMs
 
