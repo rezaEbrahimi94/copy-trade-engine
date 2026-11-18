@@ -26,6 +26,7 @@ describe('CopyTradeService', () => {
         amount: 700,
         status: 'pending',
         idempotencyKey: null,
+        handledBy: null,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
         updatedAt: new Date('2026-01-01T00:00:00.000Z'),
       },
@@ -38,6 +39,16 @@ describe('CopyTradeService', () => {
     expect([...store.outbox.values()]).toEqual([
       expect.objectContaining({ id: 'id-000002', followerTradeId: 'id-000001', attempts: 0 }),
     ]);
+  });
+
+  it('stores the API replica that handled the request on the ledger row', async () => {
+    const { service } = setup();
+    const result = await service.processCopyTrade({
+      trade: trade(),
+      followerId: 'follower-1',
+      handledBy: 'api-2',
+    });
+    expect(result).toMatchObject({ followerTrade: { handledBy: 'api-2' } });
   });
 
   it('scenario 2a: the same trade twice sequentially has one effect', async () => {

@@ -1,7 +1,7 @@
 import { pino } from 'pino';
 import { describe, expect, it, vi } from 'vitest';
 import { ConfigError, loadConfig } from '../../src/config';
-import { startPeriodicTask } from '../../src/infrastructure/periodic-task';
+import { startPeriodicTask } from '@copy-trade/platform';
 import { SimulatedExecutionGateway } from '../../src/infrastructure/simulated-execution-gateway';
 import { createMetrics, createReconciliationObserver } from '../../src/observability/metrics';
 
@@ -24,6 +24,17 @@ describe('loadConfig', () => {
     const config = loadConfig({ DATABASE_URL, OTEL_EXPORTER_OTLP_ENDPOINT: '', PORT: '' });
     expect(config.otel.endpoint).toBeUndefined();
     expect(config.http.port).toBe(3000);
+  });
+
+  it('enables the event bus only when KAFKA_BROKERS is set', () => {
+    expect(loadConfig({ DATABASE_URL }).kafka).toBeUndefined();
+    expect(
+      loadConfig({ DATABASE_URL, KAFKA_BROKERS: 'a:9092, b:9092,', CONSOLE_URL: 'http://c:8090' }),
+    ).toMatchObject({
+      kafka: { brokers: ['a:9092', 'b:9092'], requestedPartitions: 6, relayIntervalMs: 200 },
+      consoleUrl: 'http://c:8090',
+    });
+    expect(() => loadConfig({ DATABASE_URL, KAFKA_BROKERS: ' , ' })).toThrow(ConfigError);
   });
 
   it('parses booleans', () => {
@@ -51,6 +62,7 @@ describe('SimulatedExecutionGateway', () => {
     amount: 1,
     status: 'pending' as const,
     idempotencyKey: null,
+    handledBy: null,
     createdAt: new Date(0),
     updatedAt: new Date(0),
   });

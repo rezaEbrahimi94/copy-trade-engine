@@ -33,8 +33,21 @@ describe('FollowerService', () => {
         copyingEnabled: true,
         createdAt: new Date('2026-01-01T00:00:00.000Z'),
         updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+        traderIds: [],
       },
     });
+  });
+
+  it('stores the traders a follower copies, without duplicates', async () => {
+    const { service } = setup();
+    const result = await service.create({
+      balance: 1,
+      allocation: 1,
+      copyingEnabled: true,
+      traderIds: ['trader-a', 'trader-b', 'trader-a'],
+    });
+    expect(result).toMatchObject({ ok: true, follower: { traderIds: ['trader-a', 'trader-b'] } });
+    expect(await service.get('f-000001')).toMatchObject({ traderIds: ['trader-a', 'trader-b'] });
   });
 
   it.each([

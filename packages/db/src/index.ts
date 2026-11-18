@@ -5,3 +5,5 @@ export * from './migrations';
 export * from './kysely-unit-of-work';
 export * from './kysely-follower-repository';
 export * from './kysely-reconciliation-repository';
+export * from './kysely-trade-read-repository';
+export * from './kysely-instance-registry';

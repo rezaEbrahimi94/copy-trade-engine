@@ -133,7 +133,7 @@ describe('reconciliation on Postgres', () => {
       const report = await services(db).reconciliation.run();
       expect(report.summary.duplicateKeys).toBe(1);
     } finally {
-      await sql`TRUNCATE outbox, follower_trades, followers`.execute(db);
+      await pg.reset();
       await sql`ALTER TABLE follower_trades ADD CONSTRAINT follower_trades_trade_follower_key UNIQUE (trade_id, follower_id)`.execute(
         db,
       );
@@ -167,17 +167,25 @@ describe('KyselyFollowerRepository', () => {
   it('creates, finds, lists, toggles and lists trades', async () => {
     const repo = new KyselyFollowerRepository(db);
     const now = new Date('2026-01-01T00:00:00.000Z');
-    const created = await repo.create({
+    const created = await repo.create(
+      {
+        id: 'f9',
+        balance: 5,
+        remainingAllocation: 4,
+        openingBalance: 5,
+        openingAllocation: 4,
+        copyingEnabled: true,
+        createdAt: now,
+        updatedAt: now,
+      },
+      ['trader-x', 'trader-y'],
+    );
+    expect(created).toMatchObject({
       id: 'f9',
       balance: 5,
       remainingAllocation: 4,
-      openingBalance: 5,
-      openingAllocation: 4,
-      copyingEnabled: true,
-      createdAt: now,
-      updatedAt: now,
+      traderIds: ['trader-x', 'trader-y'],
     });
-    expect(created).toMatchObject({ id: 'f9', balance: 5, remainingAllocation: 4 });
     expect(await repo.findById('f9')).toEqual(created);
     expect(await repo.findById('nope')).toBeUndefined();
     expect(await repo.list(10)).toEqual([created]);

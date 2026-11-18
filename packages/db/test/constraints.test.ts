@@ -94,6 +94,7 @@ describe('database constraints (last line of defence)', () => {
         amount: 100,
         status: 'pending',
         idempotencyKey: null,
+        handledBy: null,
         createdAt: new Date(),
         updatedAt: new Date(),
       }),

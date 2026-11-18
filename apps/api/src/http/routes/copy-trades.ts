@@ -16,10 +16,9 @@ import type { AppDeps } from '../types';
  * POST /copy-trades: validated body + optional Idempotency-Key header -> CopyTradeService.
  * 201 copied | 200 duplicate (original record, same shape) | 404/422 rejected | 409 key reuse.
  */
-export const copyTradeRoutes: FastifyPluginAsyncZod<Pick<AppDeps, 'copyTrades' | 'metrics'>> = (
-  app,
-  { copyTrades, metrics },
-) => {
+export const copyTradeRoutes: FastifyPluginAsyncZod<
+  Pick<AppDeps, 'copyTrades' | 'metrics' | 'instanceId'>
+> = (app, { copyTrades, metrics, instanceId }) => {
   app.post(
     '/copy-trades',
     {
@@ -49,6 +48,7 @@ export const copyTradeRoutes: FastifyPluginAsyncZod<Pick<AppDeps, 'copyTrades' |
           const r = await copyTrades.processCopyTrade({
             trade,
             followerId,
+            handledBy: instanceId,
             ...(idempotencyKey === undefined ? {} : { idempotencyKey }),
           });
           span.setAttribute('copy_trade.outcome', r.outcome);

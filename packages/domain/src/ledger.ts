@@ -13,6 +13,8 @@ export interface FollowerTrade {
   readonly amount: MinorUnits;
   readonly status: FollowerTradeStatus;
   readonly idempotencyKey: string | null;
+  /** API replica or worker that wrote the row (null for rows written before tracking). */
+  readonly handledBy: string | null;
   readonly createdAt: Date;
   readonly updatedAt: Date;
 }

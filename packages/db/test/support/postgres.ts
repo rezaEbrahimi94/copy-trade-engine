@@ -45,7 +45,10 @@ export async function startPostgres(): Promise<TestDatabase> {
     connect,
     async reset() {
       // The ledger is append-only (trigger blocks DELETE); TRUNCATE is the test-only escape hatch.
-      await sql`TRUNCATE outbox, follower_trades, followers`.execute(admin);
+      await sql`
+        TRUNCATE processed_events, event_outbox, trades, follower_subscriptions, instances,
+                 outbox, follower_trades, followers
+      `.execute(admin);
     },
     async stop() {
       await Promise.all(connections.map((c) => c.destroy()));
@@ -103,5 +106,23 @@ export async function insertFollower(
       created_at: now,
       updated_at: now,
     })
+    .execute();
+}
+
+export async function subscribe(
+  db: Kysely<Database>,
+  followerId: string,
+  traderIds: readonly string[],
+): Promise<void> {
+  if (traderIds.length === 0) return;
+  await db
+    .insertInto('follower_subscriptions')
+    .values(
+      traderIds.map((traderId) => ({
+        follower_id: followerId,
+        trader_id: traderId,
+        created_at: new Date(),
+      })),
+    )
     .execute();
 }

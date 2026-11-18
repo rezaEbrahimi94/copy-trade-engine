@@ -1,14 +1,26 @@
 import type {
   CopyTradeTransaction,
   CopyTradeUnitOfWork,
+  EventRelayTransaction,
+  EventRelayUnitOfWork,
   ExecutionTransaction,
   ExecutionUnitOfWork,
+  TradeRecord,
+  TradeTransaction,
+  TradeUnitOfWork,
 } from '@copy-trade/application';
 import type { Follower } from '@copy-trade/domain';
 import type { Kysely, Transaction } from 'kysely';
 import { toApplicationError } from './errors';
-import { toFollowerRecord, toFollowerTrade, toFollowerTradeRow } from './mappers';
-import type { Database } from './schema';
+import {
+  toFollowerRecord,
+  toFollowerTrade,
+  toFollowerTradeRow,
+  toOutboxEvent,
+  toProcessedEvent,
+  toProcessedEventRow,
+} from './mappers';
+import type { Database, TradeRow } from './schema';
 
 export interface UnitOfWorkOptions {
   /**
@@ -21,12 +33,25 @@ export interface UnitOfWorkOptions {
 
 type Tx = Transaction<Database>;
 
+const toTradeRecord = (row: TradeRow): TradeRecord => ({
+  id: row.id,
+  traderId: row.trader_id,
+  amount: row.amount,
+  createdAt: row.created_at,
+});
+type AnyTransaction = CopyTradeTransaction &
+  ExecutionTransaction &
+  TradeTransaction &
+  EventRelayTransaction;
+
 /**
  * Kysely adapter for the transactional ports. Each `transaction()` call is one Postgres
  * transaction (READ COMMITTED); transient SQLSTATEs are mapped to TransientTransactionError
  * so the application layer can retry the whole unit of work.
  */
-export class KyselyUnitOfWork implements CopyTradeUnitOfWork, ExecutionUnitOfWork {
+export class KyselyUnitOfWork
+  implements CopyTradeUnitOfWork, ExecutionUnitOfWork, TradeUnitOfWork, EventRelayUnitOfWork
+{
   readonly #db: Kysely<Database>;
   readonly #options: UnitOfWorkOptions;
 
@@ -38,9 +63,7 @@ export class KyselyUnitOfWork implements CopyTradeUnitOfWork, ExecutionUnitOfWor
     this.#options = options;
   }
 
-  async transaction<T>(
-    work: (tx: CopyTradeTransaction & ExecutionTransaction) => Promise<T>,
-  ): Promise<T> {
+  async transaction<T>(work: (tx: AnyTransaction) => Promise<T>): Promise<T> {
     try {
       return await this.#db.transaction().execute((trx) => work(this.#bind(trx)));
     } catch (error) {
@@ -48,7 +71,7 @@ export class KyselyUnitOfWork implements CopyTradeUnitOfWork, ExecutionUnitOfWor
     }
   }
 
-  #bind(trx: Tx): CopyTradeTransaction & ExecutionTransaction {
+  #bind(trx: Tx): AnyTransaction {
     const lockFollower = async (followerId: string) => {
       const query = trx.selectFrom('followers').selectAll().where('id', '=', followerId);
       const row = await (
@@ -162,6 +185,129 @@ export class KyselyUnitOfWork implements CopyTradeUnitOfWork, ExecutionUnitOfWor
       async rescheduleMessage(id, attempts, availableAt, error) {
         await trx
           .updateTable('outbox')
+          .set({ attempts, available_at: availableAt, last_error: error })
+          .where('id', '=', id)
+          .execute();
+      },
+
+      async findProcessedEvent(eventId) {
+        const row = await trx
+          .selectFrom('processed_events')
+          .selectAll()
+          .where('event_id', '=', eventId)
+          .executeTakeFirst();
+        return row && toProcessedEvent(row);
+      },
+
+      async recordProcessedEvent(record) {
+        const row = await trx
+          .insertInto('processed_events')
+          .values(toProcessedEventRow(record))
+          .onConflict((oc) => oc.column('event_id').doNothing())
+          .returning('event_id')
+          .executeTakeFirst();
+        return row !== undefined;
+      },
+
+      async insertTrade(trade) {
+        const row = await trx
+          .insertInto('trades')
+          .values({
+            id: trade.id,
+            trader_id: trade.traderId,
+            amount: trade.amount,
+            created_at: trade.createdAt,
+          })
+          .onConflict((oc) => oc.column('id').doNothing())
+          .returningAll()
+          .executeTakeFirst();
+        return row && toTradeRecord(row);
+      },
+
+      async findTrade(id) {
+        const row = await trx
+          .selectFrom('trades')
+          .selectAll()
+          .where('id', '=', id)
+          .executeTakeFirst();
+        return row && toTradeRecord(row);
+      },
+
+      async findEligibleSubscribers(traderId) {
+        const rows = await trx
+          .selectFrom('follower_subscriptions as s')
+          .innerJoin('followers as f', 'f.id', 's.follower_id')
+          .select('f.id')
+          .where('s.trader_id', '=', traderId)
+          .where('f.copying_enabled', '=', true)
+          .where('f.id', '<>', traderId)
+          .orderBy('f.created_at')
+          .orderBy('f.id')
+          .execute();
+        return rows.map((r) => r.id);
+      },
+
+      async enqueueEvent(event) {
+        await trx
+          .insertInto('event_outbox')
+          .values({
+            id: event.id,
+            event_id: event.eventId,
+            topic: event.topic,
+            message_key: event.key,
+            trade_id: event.tradeId,
+            payload: JSON.stringify(event.payload),
+            attempts: event.attempts,
+            available_at: event.availableAt,
+            created_at: event.availableAt,
+          })
+          .execute();
+      },
+
+      async listTradeEvents(tradeId) {
+        const rows = await trx
+          .selectFrom('event_outbox')
+          .selectAll()
+          .distinctOn('event_id')
+          .where('trade_id', '=', tradeId)
+          .orderBy('event_id')
+          .orderBy('created_at')
+          .orderBy('id')
+          .execute();
+        return rows
+          .map(toOutboxEvent)
+          .sort(
+            (a, b) => a.availableAt.getTime() - b.availableAt.getTime() || a.id.localeCompare(b.id),
+          );
+      },
+
+      async claimDueEvents(now, limit) {
+        const rows = await trx
+          .selectFrom('event_outbox')
+          .selectAll()
+          .where('published_at', 'is', null)
+          .where('available_at', '<=', now)
+          .orderBy('available_at')
+          .orderBy('id')
+          .limit(limit)
+          .forUpdate()
+          .skipLocked()
+          .execute();
+        return rows.map(toOutboxEvent);
+      },
+
+      async markPublished(ids, now) {
+        if (ids.length === 0) return;
+        await trx
+          .updateTable('event_outbox')
+          .set({ published_at: now })
+          .where('id', 'in', [...ids])
+          .execute();
+      },
+
+      async rescheduleEvent(id, attempts, availableAt, error) {
+        await trx
+          .updateTable('event_outbox')
           .set({ attempts, available_at: availableAt, last_error: error })
           .where('id', '=', id)
           .execute();

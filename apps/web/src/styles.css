@@ -242,3 +242,27 @@ input {
   max-height: 300px;
   overflow-y: auto;
 }
+
+.instance {
+  white-space: nowrap;
+  display: inline-block;
+  margin: 0 0.15rem;
+  padding: 0.05rem 0.45rem;
+  border: 1px solid;
+  border-radius: 999px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.78rem;
+  background: #fff;
+}
+
+.served {
+  margin: 0.25rem 0 0;
+}
+
+.links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: baseline;
+  margin-bottom: 0.75rem;
+}

@@ -5,3 +5,5 @@ export * from './copy-trade-service';
 export * from './follower-service';
 export * from './execution-service';
 export * from './reconciliation-service';
+export * from './trade-service';
+export * from './event-relay-service';

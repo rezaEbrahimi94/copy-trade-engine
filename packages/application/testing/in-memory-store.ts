@@ -9,12 +9,22 @@ import { TransientTransactionError } from '../src/errors';
 import type {
   CopyTradeTransaction,
   CopyTradeUnitOfWork,
+  EventRelayTransaction,
+  EventRelayUnitOfWork,
   ExecutionTransaction,
   ExecutionUnitOfWork,
   FollowerRecord,
   FollowerRepository,
+  FollowerView,
+  OutboxEvent,
   OutboxMessage,
+  ProcessedEvent,
   ReconciliationRepository,
+  TradeReadRepository,
+  TradeRecord,
+  TradeTransaction,
+  TradeUnitOfWork,
+  TradeView,
 } from '../src/ports';
 import { KeyedMutex, type Release } from './keyed-mutex';
 
@@ -22,6 +32,16 @@ interface StoredMessage extends OutboxMessage {
   readonly processedAt: Date | null;
   readonly lastError: string | null;
 }
+
+export interface StoredEvent extends OutboxEvent {
+  readonly publishedAt: Date | null;
+  readonly lastError: string | null;
+}
+
+type AnyTransaction = CopyTradeTransaction &
+  ExecutionTransaction &
+  TradeTransaction &
+  EventRelayTransaction;
 
 export interface InMemoryStoreOptions {
   /** `false` disables follower row locks: the negative control for concurrency tests. */
@@ -37,11 +57,23 @@ const tradeKey = (tradeId: string, followerId: string): string => `${tradeId}\u0
  * undo log and reverted when the unit of work throws, mirroring a database rollback.
  */
 export class InMemoryStore
-  implements CopyTradeUnitOfWork, ExecutionUnitOfWork, FollowerRepository, ReconciliationRepository
+  implements
+    CopyTradeUnitOfWork,
+    ExecutionUnitOfWork,
+    TradeUnitOfWork,
+    EventRelayUnitOfWork,
+    FollowerRepository,
+    ReconciliationRepository,
+    TradeReadRepository
 {
   readonly followers = new Map<string, FollowerRecord>();
   readonly trades = new Map<string, FollowerTrade>();
   readonly outbox = new Map<string, StoredMessage>();
+  /** followerId -> traders it copies. */
+  readonly subscriptions = new Map<string, readonly string[]>();
+  readonly openedTrades = new Map<string, TradeRecord>();
+  readonly events = new Map<string, StoredEvent>();
+  readonly processedEvents = new Map<string, ProcessedEvent>();
   readonly #mutex = new KeyedMutex();
   readonly #rowLocking: boolean;
   readonly #yield: () => Promise<void>;
@@ -57,7 +89,7 @@ export class InMemoryStore
     this.#pendingFailures.push(...codes);
   }
 
-  async transaction<T>(work: (tx: CopyTradeTransaction & ExecutionTransaction) => Promise<T>) {
+  async transaction<T>(work: (tx: AnyTransaction) => Promise<T>) {
     const undo: (() => void)[] = [];
     const releases: Release[] = [];
     const held = new Set<string>();
@@ -84,7 +116,7 @@ export class InMemoryStore
     lock: (key: string) => Promise<void>,
     releases: Release[],
     held: Set<string>,
-  ): CopyTradeTransaction & ExecutionTransaction {
+  ): AnyTransaction {
     const setMap = <V>(map: Map<string, V>, key: string, value: V): void => {
       const before = map.get(key);
       undo.push(() => (before === undefined ? map.delete(key) : map.set(key, before)));
@@ -176,28 +208,138 @@ export class InMemoryStore
           setMap(this.outbox, id, { ...message, attempts, availableAt, lastError: error });
         }
       },
+      findProcessedEvent: async (eventId) => {
+        await this.#yield();
+        return this.processedEvents.get(eventId);
+      },
+      recordProcessedEvent: async (record) => {
+        await this.#yield();
+        if (this.processedEvents.has(record.eventId)) return false;
+        setMap(this.processedEvents, record.eventId, record);
+        return true;
+      },
+      insertTrade: async (trade) => {
+        await this.#yield();
+        if (this.openedTrades.has(trade.id)) return undefined;
+        setMap(this.openedTrades, trade.id, trade);
+        return trade;
+      },
+      findTrade: async (id) => {
+        await this.#yield();
+        return this.openedTrades.get(id);
+      },
+      findEligibleSubscribers: async (traderId) => {
+        await this.#yield();
+        return [...this.followers.values()]
+          .filter(
+            (f) =>
+              f.copyingEnabled &&
+              f.id !== traderId &&
+              (this.subscriptions.get(f.id) ?? []).includes(traderId),
+          )
+          .map((f) => f.id);
+      },
+      enqueueEvent: async (event) => {
+        await this.#yield();
+        setMap(this.events, event.id, { ...event, publishedAt: null, lastError: null });
+      },
+      listTradeEvents: async (tradeId) => {
+        await this.#yield();
+        return this.#firstEvents(tradeId);
+      },
+      claimDueEvents: async (now, limit) => {
+        await this.#yield();
+        const claimed: OutboxEvent[] = [];
+        const due = [...this.events.values()].filter(
+          (e) => e.publishedAt === null && e.availableAt.getTime() <= now.getTime(),
+        );
+        for (const event of due) {
+          if (claimed.length >= limit) break;
+          const release = this.#mutex.tryAcquire(`event:${event.id}`);
+          if (release === undefined) continue;
+          releases.push(release);
+          claimed.push(event);
+        }
+        return claimed;
+      },
+      markPublished: async (ids, now) => {
+        await this.#yield();
+        for (const id of ids) {
+          const event = this.events.get(id);
+          if (event !== undefined) setMap(this.events, id, { ...event, publishedAt: now });
+        }
+      },
+      rescheduleEvent: async (id, attempts, availableAt, error) => {
+        await this.#yield();
+        const event = this.events.get(id);
+        if (event !== undefined) {
+          setMap(this.events, id, { ...event, attempts, availableAt, lastError: error });
+        }
+      },
     };
   }
 
-  create(record: FollowerRecord): Promise<FollowerRecord> {
+  #view(record: FollowerRecord): FollowerView {
+    return { ...record, traderIds: this.subscriptions.get(record.id) ?? [] };
+  }
+
+  create(record: FollowerRecord, traderIds: readonly string[]): Promise<FollowerView> {
     this.followers.set(record.id, record);
-    return Promise.resolve(record);
+    this.subscriptions.set(record.id, traderIds);
+    return Promise.resolve(this.#view(record));
   }
 
-  findById(id: string): Promise<FollowerRecord | undefined> {
-    return Promise.resolve(this.followers.get(id));
+  findById(id: string): Promise<FollowerView | undefined> {
+    const record = this.followers.get(id);
+    return Promise.resolve(record && this.#view(record));
   }
 
-  list(limit: number): Promise<readonly FollowerRecord[]> {
-    return Promise.resolve([...this.followers.values()].slice(0, limit));
+  list(limit: number): Promise<readonly FollowerView[]> {
+    return Promise.resolve([...this.followers.values()].slice(0, limit).map((f) => this.#view(f)));
   }
 
-  setCopyingEnabled(id: string, enabled: boolean, now: Date) {
+  setCopyingEnabled(id: string, enabled: boolean, now: Date): Promise<FollowerView | undefined> {
     const current = this.followers.get(id);
     if (current === undefined) return Promise.resolve(undefined);
     const updated = { ...current, copyingEnabled: enabled, updatedAt: now };
     this.followers.set(id, updated);
-    return Promise.resolve(updated);
+    return Promise.resolve(this.#view(updated));
+  }
+
+  #firstEvents(tradeId: string): StoredEvent[] {
+    const byEventId = new Map<string, StoredEvent>();
+    for (const e of this.events.values()) {
+      if (e.tradeId === tradeId && !byEventId.has(e.eventId)) byEventId.set(e.eventId, e);
+    }
+    return [...byEventId.values()];
+  }
+
+  #tradeView(trade: TradeRecord): TradeView {
+    return {
+      trade,
+      requests: this.#firstEvents(trade.id).map((e) => ({
+        eventId: e.eventId,
+        followerId: e.payload.followerId,
+        publishedAt:
+          [...this.events.values()].find((x) => x.eventId === e.eventId && x.publishedAt !== null)
+            ?.publishedAt ?? null,
+        processed: this.processedEvents.get(e.eventId) ?? null,
+      })),
+    };
+  }
+
+  findTradeView(id: string): Promise<TradeView | undefined> {
+    const trade = this.openedTrades.get(id);
+    return Promise.resolve(trade && this.#tradeView(trade));
+  }
+
+  listTradeViews(limit: number): Promise<readonly TradeView[]> {
+    return Promise.resolve(
+      [...this.openedTrades.values()]
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+        .slice(0, limit)
+        .map((t) => this.#tradeView(t)),
+    );
   }
 
   listTrades(followerId: string, limit: number): Promise<readonly FollowerTrade[]> {

@@ -1,5 +1,5 @@
 // @ts-check
-/** Mutation testing for the pure domain and the application services (use cases). */
+/** Mutation testing for the pure domain, the application services and the worker's message handler. */
 /** @type {import('@stryker-mutator/api/core').PartialStrykerOptions} */
 export default {
   packageManager: 'pnpm',
@@ -9,6 +9,7 @@ export default {
   mutate: [
     'packages/domain/src/**/*.ts',
     'packages/application/src/**/*.ts',
+    'apps/worker/src/handler.ts',
     '!**/index.ts',
     '!packages/application/src/ports.ts',
   ],

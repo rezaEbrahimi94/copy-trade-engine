@@ -1,7 +1,7 @@
 import cors from '@fastify/cors';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
-import { API_PREFIX } from '@copy-trade/contracts';
+import { API_PREFIX, INSTANCE_ID_HEADER } from '@copy-trade/contracts';
 import Fastify, { LogController } from 'fastify';
 import {
   jsonSchemaTransform,
@@ -12,7 +12,8 @@ import {
 import { errorBody, errorHandler } from './errors';
 import { copyTradeRoutes } from './routes/copy-trades';
 import { followerRoutes } from './routes/followers';
-import { healthRoutes, reconciliationRoutes } from './routes/operations';
+import { healthRoutes, reconciliationRoutes, systemRoutes } from './routes/operations';
+import { tradeRoutes } from './routes/trades';
 import type { AppDeps } from './types';
 
 export const REQUEST_ID_HEADER = 'x-request-id';
@@ -38,6 +39,7 @@ export async function buildApp(deps: AppDeps) {
 
   app.addHook('onSend', (request, reply, payload, done) => {
     void reply.header(REQUEST_ID_HEADER, request.id);
+    void reply.header(INSTANCE_ID_HEADER, deps.instanceId);
     done(null, payload);
   });
   app.addHook('onResponse', (request, reply, done) => {
@@ -52,7 +54,10 @@ export async function buildApp(deps: AppDeps) {
     done();
   });
 
-  await app.register(cors, { origin: deps.corsOrigin.split(',').map((o) => o.trim()) });
+  await app.register(cors, {
+    origin: deps.corsOrigin.split(',').map((o) => o.trim()),
+    exposedHeaders: [REQUEST_ID_HEADER, INSTANCE_ID_HEADER],
+  });
   await app.register(swagger, {
     openapi: { info: { title: 'Copy Trade API', version: '1.0.0' } },
     transform: jsonSchemaTransform,
@@ -63,6 +68,8 @@ export async function buildApp(deps: AppDeps) {
   await app.register(followerRoutes, { prefix: API_PREFIX, ...deps });
   await app.register(copyTradeRoutes, { prefix: API_PREFIX, ...deps });
   await app.register(reconciliationRoutes, { prefix: API_PREFIX, ...deps });
+  await app.register(tradeRoutes, { prefix: API_PREFIX, ...deps });
+  await app.register(systemRoutes, { prefix: API_PREFIX, ...deps });
 
   return app;
 }

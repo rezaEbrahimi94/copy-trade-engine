@@ -2,7 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 /**
  * unit:        pure domain, application services (in-memory adapters), HTTP via inject.
- * integration: real Postgres via Testcontainers (requires Docker).
+ * integration: real Postgres and Redpanda via Testcontainers (requires Docker).
  */
 export default defineConfig({
   test: {
@@ -11,8 +11,8 @@ export default defineConfig({
         test: {
           name: 'unit',
           include: [
-            'packages/{domain,application,contracts}/test/**/*.test.ts',
-            'apps/api/test/unit/**/*.test.ts',
+            'packages/{domain,application,contracts,messaging,platform}/test/**/*.test.ts',
+            'apps/{api,worker}/test/unit/**/*.test.ts',
           ],
           environment: 'node',
         },
@@ -20,7 +20,10 @@ export default defineConfig({
       {
         test: {
           name: 'integration',
-          include: ['packages/db/test/**/*.test.ts', 'apps/api/test/integration/**/*.test.ts'],
+          include: [
+            'packages/db/test/**/*.test.ts',
+            'apps/{api,worker}/test/integration/**/*.test.ts',
+          ],
           environment: 'node',
           testTimeout: 120_000,
           hookTimeout: 180_000,
@@ -40,12 +43,11 @@ export default defineConfig({
         'apps/api/src/config.ts',
         'apps/api/src/observability/metrics.ts',
         'apps/api/src/infrastructure/**/*.ts',
+        'packages/messaging/src/codec.ts',
+        'packages/platform/src/{instance-id,periodic-task}.ts',
+        'apps/worker/src/{config,handler,metrics}.ts',
       ],
-      exclude: [
-        '**/index.ts',
-        'packages/application/src/ports.ts',
-        'apps/api/src/infrastructure/system.ts',
-      ],
+      exclude: ['**/index.ts', 'packages/application/src/ports.ts'],
       thresholds: {
         'packages/domain/src/**': { lines: 100, branches: 100, functions: 100, statements: 100 },
         'packages/application/src/**': {

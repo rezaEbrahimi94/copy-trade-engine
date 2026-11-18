@@ -6,14 +6,44 @@ import {
   type Trade,
 } from '@copy-trade/domain';
 import { LedgerKeyConflictError } from './errors';
-import type { Clock, CopyTradeUnitOfWork, IdGenerator } from './ports';
+import type {
+  Clock,
+  CopyTradeTransaction,
+  CopyTradeUnitOfWork,
+  FollowerRecord,
+  IdGenerator,
+  MessageSource,
+  ProcessedEvent,
+} from './ports';
 import { withRetry, type RetryPolicy } from './retry';
 
 export interface ProcessCopyTradeCommand {
   readonly trade: Trade;
   readonly followerId: string;
   readonly idempotencyKey?: string;
+  /** API replica or worker processing the request; stored on the ledger row. */
+  readonly handledBy?: string;
 }
+
+export interface ProcessRequestedEventCommand {
+  readonly eventId: string;
+  readonly trade: Trade;
+  readonly followerId: string;
+  readonly handledBy: string;
+  readonly source: MessageSource | null;
+}
+
+/**
+ * `redelivered`: the event id was already processed; `record` is the stored outcome and no
+ * state changed. Otherwise `result` is the fresh outcome and `record` was stored atomically.
+ */
+export type ProcessRequestedEventResult =
+  | { readonly redelivered: true; readonly record: ProcessedEvent }
+  | {
+      readonly redelivered: false;
+      readonly record: ProcessedEvent;
+      readonly result: CopyTradeResult;
+    };
 
 export type CopyTradeResult =
   | {
@@ -53,64 +83,99 @@ export class CopyTradeService {
   }
 
   processCopyTrade(command: ProcessCopyTradeCommand): Promise<CopyTradeResult> {
-    return withRetry(this.#deps.retry, () => this.#attempt(command));
+    return withRetry(this.#deps.retry, () =>
+      this.#deps.unitOfWork.transaction(async (tx) =>
+        this.#copy(tx, command, await tx.lockFollower(command.followerId)),
+      ),
+    );
   }
 
-  #attempt(command: ProcessCopyTradeCommand): Promise<CopyTradeResult> {
-    const { unitOfWork, clock, ids } = this.#deps;
+  /**
+   * Idempotent consumer: the inbox check runs after the follower lock, and the inbox row is
+   * written in the same transaction as the copy, so a redelivered event never has a second
+   * effect and always reports the outcome of its first processing.
+   */
+  processRequestedEvent(
+    command: ProcessRequestedEventCommand,
+  ): Promise<ProcessRequestedEventResult> {
+    const { eventId, trade, followerId, handledBy, source } = command;
+    return withRetry(this.#deps.retry, () =>
+      this.#deps.unitOfWork.transaction(async (tx): Promise<ProcessRequestedEventResult> => {
+        const follower = await tx.lockFollower(followerId);
+        const seen = await tx.findProcessedEvent(eventId);
+        if (seen !== undefined) return { redelivered: true, record: seen };
+
+        const result = await this.#copy(tx, { trade, followerId, handledBy }, follower);
+        const record: ProcessedEvent = {
+          eventId,
+          tradeId: trade.id,
+          followerId,
+          outcome: result.outcome,
+          reason: result.outcome === 'rejected' ? result.reason : null,
+          followerTradeId: 'followerTrade' in result ? result.followerTrade.id : null,
+          handledBy,
+          source,
+          processedAt: this.#deps.clock.now(),
+        };
+        if (!(await tx.recordProcessedEvent(record))) throw new LedgerKeyConflictError();
+        return { redelivered: false, record, result };
+      }),
+    );
+  }
+
+  async #copy(
+    tx: CopyTradeTransaction,
+    command: ProcessCopyTradeCommand,
+    follower: FollowerRecord | undefined,
+  ): Promise<CopyTradeResult> {
+    const { clock, ids } = this.#deps;
     const { trade, followerId, idempotencyKey } = command;
 
-    return unitOfWork.transaction(async (tx): Promise<CopyTradeResult> => {
-      const follower = await tx.lockFollower(followerId);
-
-      if (idempotencyKey !== undefined) {
-        const byKey = await tx.findFollowerTradeByIdempotencyKey(idempotencyKey);
-        if (
-          byKey !== undefined &&
-          (byKey.tradeId !== trade.id || byKey.followerId !== followerId)
-        ) {
-          return { outcome: 'idempotency_key_conflict', followerTrade: byKey };
-        }
+    if (idempotencyKey !== undefined) {
+      const byKey = await tx.findFollowerTradeByIdempotencyKey(idempotencyKey);
+      if (byKey !== undefined && (byKey.tradeId !== trade.id || byKey.followerId !== followerId)) {
+        return { outcome: 'idempotency_key_conflict', followerTrade: byKey };
       }
+    }
 
-      if (follower !== undefined) {
-        const existing = await tx.findFollowerTrade(trade.id, followerId);
-        if (existing !== undefined) {
-          return { outcome: 'duplicate', followerTrade: existing, follower: toFollower(follower) };
-        }
+    if (follower !== undefined) {
+      const existing = await tx.findFollowerTrade(trade.id, followerId);
+      if (existing !== undefined) {
+        return { outcome: 'duplicate', followerTrade: existing, follower: toFollower(follower) };
       }
+    }
 
-      const decision = decideCopyTrade(trade, follower);
-      if (!decision.ok) return { outcome: 'rejected', reason: decision.error };
+    const decision = decideCopyTrade(trade, follower);
+    if (!decision.ok) return { outcome: 'rejected', reason: decision.error };
 
-      const now = clock.now();
-      await tx.saveFollowerBalances(decision.value.follower, now);
+    const now = clock.now();
+    await tx.saveFollowerBalances(decision.value.follower, now);
 
-      const inserted = await tx.insertFollowerTrade({
-        id: ids.next(),
-        tradeId: trade.id,
-        traderId: trade.traderId,
-        followerId,
-        amount: decision.value.amount,
-        status: 'pending',
-        idempotencyKey: idempotencyKey ?? null,
-        createdAt: now,
-        updatedAt: now,
-      });
-      if (inserted === undefined) throw new LedgerKeyConflictError();
-
-      await tx.enqueueExecution({
-        id: ids.next(),
-        followerTradeId: inserted.id,
-        attempts: 0,
-        availableAt: now,
-      });
-
-      return {
-        outcome: 'copied',
-        followerTrade: inserted,
-        follower: toFollower(decision.value.follower),
-      };
+    const inserted = await tx.insertFollowerTrade({
+      id: ids.next(),
+      tradeId: trade.id,
+      traderId: trade.traderId,
+      followerId,
+      amount: decision.value.amount,
+      status: 'pending',
+      idempotencyKey: idempotencyKey ?? null,
+      handledBy: command.handledBy ?? null,
+      createdAt: now,
+      updatedAt: now,
     });
+    if (inserted === undefined) throw new LedgerKeyConflictError();
+
+    await tx.enqueueExecution({
+      id: ids.next(),
+      followerTradeId: inserted.id,
+      attempts: 0,
+      availableAt: now,
+    });
+
+    return {
+      outcome: 'copied',
+      followerTrade: inserted,
+      follower: toFollower(decision.value.follower),
+    };
   }
 }

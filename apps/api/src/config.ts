@@ -28,6 +28,23 @@ const EnvSchema = z.object({
   OTEL_SERVICE_NAME: z.string().min(1).default('copy-trade-api'),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.url().optional(),
   INSTANCE_ID: z.string().min(1).default('api-1'),
+  HEARTBEAT_INTERVAL_MS: int(0).default(2_000),
+  KAFKA_BROKERS: z
+    .string()
+    .transform((v) =>
+      v
+        .split(',')
+        .map((b) => b.trim())
+        .filter((b) => b !== ''),
+    )
+    .pipe(z.array(z.string().min(1)).min(1))
+    .optional(),
+  KAFKA_CLIENT_ID: z.string().min(1).default('copy-trade-api'),
+  KAFKA_REQUESTED_PARTITIONS: int(1).default(6),
+  EVENT_RELAY_INTERVAL_MS: int(0).default(200),
+  EVENT_RELAY_BATCH_SIZE: int(1).default(100),
+  EVENT_RELAY_RETRY_DELAY_MS: int(0).default(1_000),
+  CONSOLE_URL: z.url().optional(),
 });
 
 export type Env = z.infer<typeof EnvSchema>;
@@ -54,6 +71,19 @@ export interface AppConfig {
   readonly reconciliation: { readonly intervalMs: number; readonly stuckThresholdMs: number };
   readonly execution: { readonly failureTradePrefix: string };
   readonly otel: { readonly serviceName: string; readonly endpoint: string | undefined };
+  readonly heartbeatIntervalMs: number;
+  /** Absent when `KAFKA_BROKERS` is unset: trades are still stored, nothing is published. */
+  readonly kafka:
+    | {
+        readonly brokers: readonly string[];
+        readonly clientId: string;
+        readonly requestedPartitions: number;
+        readonly relayIntervalMs: number;
+        readonly relayBatchSize: number;
+        readonly relayRetryDelayMs: number;
+      }
+    | undefined;
+  readonly consoleUrl: string | undefined;
 }
 
 export class ConfigError extends Error {
@@ -93,5 +123,18 @@ export function loadConfig(source: Readonly<Record<string, string | undefined>>)
     },
     execution: { failureTradePrefix: e.SIMULATED_FAILURE_TRADE_PREFIX },
     otel: { serviceName: e.OTEL_SERVICE_NAME, endpoint: e.OTEL_EXPORTER_OTLP_ENDPOINT },
+    heartbeatIntervalMs: e.HEARTBEAT_INTERVAL_MS,
+    kafka:
+      e.KAFKA_BROKERS === undefined
+        ? undefined
+        : {
+            brokers: e.KAFKA_BROKERS,
+            clientId: e.KAFKA_CLIENT_ID,
+            requestedPartitions: e.KAFKA_REQUESTED_PARTITIONS,
+            relayIntervalMs: e.EVENT_RELAY_INTERVAL_MS,
+            relayBatchSize: e.EVENT_RELAY_BATCH_SIZE,
+            relayRetryDelayMs: e.EVENT_RELAY_RETRY_DELAY_MS,
+          },
+    consoleUrl: e.CONSOLE_URL,
   };
 }

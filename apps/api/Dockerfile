@@ -14,6 +14,8 @@ COPY packages/domain/package.json packages/domain/
 COPY packages/application/package.json packages/application/
 COPY packages/contracts/package.json packages/contracts/
 COPY packages/db/package.json packages/db/
+COPY packages/messaging/package.json packages/messaging/
+COPY packages/platform/package.json packages/platform/
 RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
     pnpm install --frozen-lockfile --filter "@copy-trade/api..."
 COPY packages packages

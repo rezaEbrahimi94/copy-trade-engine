@@ -8,6 +8,8 @@ export interface Metrics {
   readonly copyOutcomes: Counter<'outcome' | 'reason'>;
   readonly txRetries: Counter<'reason'>;
   readonly executions: Counter<'result'>;
+  readonly tradesOpened: Counter<'outcome'>;
+  readonly eventsPublished: Counter<'result'>;
   readonly reconciliationDriftedFollowers: Gauge;
   readonly reconciliationAbsoluteDrift: Gauge;
   readonly reconciliationDuplicateKeys: Gauge;
@@ -24,6 +26,18 @@ export function createMetrics(options: { collectDefaults: boolean; instanceId: s
   const registers = [registry];
   return {
     registry,
+    tradesOpened: new Counter({
+      name: 'trades_opened_total',
+      help: 'POST /trades outcomes (accepted, duplicate, trade_conflict, invalid_amount)',
+      labelNames: ['outcome'],
+      registers,
+    }),
+    eventsPublished: new Counter({
+      name: 'event_outbox_published_total',
+      help: 'Outbox events published to the bus (result=published) or rescheduled (result=failed)',
+      labelNames: ['result'],
+      registers,
+    }),
     httpDuration: new Histogram({
       name: 'http_request_duration_seconds',
       help: 'HTTP request duration by route and status',

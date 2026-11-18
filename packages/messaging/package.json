@@ -1,0 +1,19 @@
+{
+  "name": "@copy-trade/messaging",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@copy-trade/application": "workspace:*",
+    "@copy-trade/contracts": "workspace:*",
+    "@copy-trade/domain": "workspace:*",
+    "kafkajs": "2.2.4",
+    "pino": "10.4.0"
+  }
+}

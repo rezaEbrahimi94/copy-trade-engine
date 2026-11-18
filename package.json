@@ -7,7 +7,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "dev": "pnpm --parallel --filter @copy-trade/api --filter @copy-trade/web dev",
+    "dev": "pnpm --parallel --filter @copy-trade/api --filter @copy-trade/worker --filter @copy-trade/web dev",
     "build": "pnpm -r build",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
@@ -28,16 +28,21 @@
     "stack:up": "docker compose up -d --build --wait",
     "stack:down": "docker compose down",
     "test:e2e:stack": "pnpm stack:up && pnpm test:e2e",
-    "demo:record": "playwright test --project demo"
+    "demo:record": "playwright test --project demo",
+    "load": "tsx scripts/load.ts"
   },
   "devDependencies": {
+    "@copy-trade/contracts": "workspace:*",
     "@eslint/js": "10.0.1",
     "@playwright/test": "1.65.1",
     "@stryker-mutator/core": "10.1.1",
     "@stryker-mutator/vitest-runner": "10.1.1",
     "@testcontainers/postgresql": "12.2.1",
+    "@testcontainers/redpanda": "12.2.1",
+    "@types/autocannon": "7.12.7",
     "@types/node": "26.6.6",
     "@vitest/coverage-v8": "5.1.0",
+    "autocannon": "9.0.0",
     "eslint": "10.15.0",
     "eslint-plugin-react-hooks": "7.1.1",
     "eslint-plugin-react-refresh": "0.5.8",
@@ -48,6 +53,7 @@
     "tsx": "4.23.15",
     "typescript": "6.0.3",
     "typescript-eslint": "8.73.0",
-    "vitest": "5.1.0"
+    "vitest": "5.1.0",
+    "zod": "4.6.7"
   }
 }

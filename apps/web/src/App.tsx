@@ -1,8 +1,11 @@
 import type { FollowerDto, FollowerTradeDto, ReconciliationReportDto } from '@copy-trade/contracts';
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError, type CopyTradeCall } from './api';
+import { api, ApiError, onInstance, type CopyTradeCall } from './api';
+import { EventBusPanel } from './event-bus';
 import { CreateFollowerForm, TradeForm } from './forms';
+import { MultiReplicaPanel } from './multi-replica';
 import { SCENARIOS, summarize, type Scenario, type ScenarioRun } from './scenarios';
+import { InstanceBadge, InstancesPanel } from './widgets';
 
 const fmt = (n: number): string => n.toLocaleString('en-US');
 const newId = (): string => crypto.randomUUID();
@@ -17,6 +20,9 @@ export function App() {
   const [report, setReport] = useState<ReconciliationReportDto | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const [servedBy, setServedBy] = useState<string | undefined>();
+
+  useEffect(() => onInstance(setServedBy), []);
 
   const selected = followers.find((f) => f.id === selectedId);
 
@@ -88,6 +94,9 @@ export function App() {
           Amounts are integer minor units. Every copy is idempotent per (trade, follower) and
           serialized per follower with a row lock.
         </p>
+        <p className="served" data-testid="served-by">
+          Last response served by <InstanceBadge id={servedBy} />
+        </p>
       </header>
 
       {error !== undefined && (
@@ -120,6 +129,7 @@ export function App() {
                 <th>Scenario</th>
                 <th>Follower</th>
                 <th>Responses</th>
+                <th>Served by</th>
                 <th>Result</th>
                 <th>Balance after</th>
                 <th>Allocation after</th>
@@ -131,6 +141,11 @@ export function App() {
                   <td>{r.name}</td>
                   <td className="mono">{short(r.follower.id)}</td>
                   <td className="mono">{r.calls.map((c) => c.status).join(' / ')}</td>
+                  <td data-testid="scenario-instances">
+                    {r.calls.map((c, i) => (
+                      <InstanceBadge key={i} id={c.instanceId} />
+                    ))}
+                  </td>
                   <td data-testid="scenario-summary">{r.summary}</td>
                   <td data-testid="scenario-balance">{fmt(r.follower.balance)}</td>
                   <td data-testid="scenario-allocation">{fmt(r.follower.remainingAllocation)}</td>
@@ -140,6 +155,10 @@ export function App() {
           </table>
         )}
       </section>
+
+      <MultiReplicaPanel disabled={busy} guard={guard} newId={newId} />
+      <EventBusPanel disabled={busy} guard={guard} newId={newId} />
+      <InstancesPanel />
 
       <div className="columns">
         <section className="card" aria-labelledby="followers-title">
@@ -247,6 +266,7 @@ export function App() {
                     <th>Trade</th>
                     <th>Amount</th>
                     <th>Status</th>
+                    <th>Handled by</th>
                     <th>Recorded</th>
                   </tr>
                 </thead>
@@ -257,6 +277,9 @@ export function App() {
                       <td>{fmt(t.amount)}</td>
                       <td>
                         <span className={`badge ${t.status}`}>{t.status}</span>
+                      </td>
+                      <td data-testid="trade-handled-by">
+                        <InstanceBadge id={t.handledBy} />
                       </td>
                       <td>{new Date(t.createdAt).toLocaleTimeString()}</td>
                     </tr>

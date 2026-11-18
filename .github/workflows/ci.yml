@@ -30,6 +30,7 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
+      - run: pnpm build
 
   unit:
     name: Unit + property tests (coverage) and mutation testing
@@ -53,7 +54,7 @@ jobs:
             reports/mutation/
 
   integration:
-    name: Integration (Testcontainers, real Postgres, multi-process)
+    name: Integration (Testcontainers, Postgres + Redpanda, multi-process workers)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +67,7 @@ jobs:
       - run: pnpm test:integration
 
   e2e:
-    name: E2E (Playwright against docker compose stack)
+    name: E2E + load (Playwright and autocannon against the compose stack)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +80,14 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: docker compose up -d --build --wait
       - run: pnpm test:e2e
+      - run: pnpm load
+      - name: Kill a worker, restart it, and re-check the invariants
+        run: |
+          docker kill copy-trade-worker-2
+          sleep 15 # session timeout: the group rebalances worker-2's partitions to the survivors
+          LOAD_REQUESTS=2000 pnpm load
+          docker compose up -d --wait worker
+          LOAD_REQUESTS=2000 pnpm load
       - if: failure()
         run: docker compose logs --no-color
       - uses: actions/upload-artifact@v4

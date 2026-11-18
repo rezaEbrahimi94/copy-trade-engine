@@ -1,10 +1,12 @@
 import {
   HealthResponseSchema,
+  InstanceListSchema,
+  SystemInfoSchema,
   ReconciliationReportSchema,
   RedriveResponseSchema,
 } from '@copy-trade/contracts';
 import type { FastifyPluginAsyncZod } from 'fastify-type-provider-zod';
-import { presentReconciliation } from '../presenters';
+import { presentInstance, presentReconciliation } from '../presenters';
 import type { AppDeps } from '../types';
 
 export const reconciliationRoutes: FastifyPluginAsyncZod<Pick<AppDeps, 'reconciliation'>> = (
@@ -80,5 +82,35 @@ export const healthRoutes: FastifyPluginAsyncZod<Pick<AppDeps, 'readinessChecks'
       .header('content-type', metrics.registry.contentType)
       .send(await metrics.registry.metrics());
   });
+  return Promise.resolve();
+};
+
+export const systemRoutes: FastifyPluginAsyncZod<Pick<AppDeps, 'instances' | 'system'>> = (
+  app,
+  { instances, system },
+) => {
+  app.get(
+    '/instances',
+    {
+      schema: {
+        tags: ['operations'],
+        summary: 'API replicas and workers with their last heartbeat and assigned partitions',
+        response: { 200: InstanceListSchema },
+      },
+    },
+    async () => ({ items: (await instances.list()).map(presentInstance) }),
+  );
+
+  app.get(
+    '/system',
+    {
+      schema: {
+        tags: ['operations'],
+        summary: 'Serving replica, event bus topics and the Redpanda Console URL',
+        response: { 200: SystemInfoSchema },
+      },
+    },
+    () => Promise.resolve(system),
+  );
   return Promise.resolve();
 };

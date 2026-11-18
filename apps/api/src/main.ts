@@ -1,14 +1,21 @@
+import { TOPICS } from '@copy-trade/contracts';
 import { migrateToLatest } from '@copy-trade/db';
+import { ensureTopics } from '@copy-trade/messaging';
+import { resolveInstanceId, startPeriodicTask, type PeriodicTask } from '@copy-trade/platform';
 import closeWithGrace from 'close-with-grace';
 import { loadConfig } from './config';
 import { createContainer } from './container';
 import { buildApp } from './http/app';
-import { startPeriodicTask, type PeriodicTask } from './infrastructure/periodic-task';
 import { createLogger } from './observability/logger';
 
-const config = loadConfig(process.env);
+const loaded = loadConfig(process.env);
+const config = {
+  ...loaded,
+  instanceId: await resolveInstanceId({ configured: process.env['INSTANCE_ID'], service: 'api' }),
+};
 const logger = createLogger(config);
 const container = createContainer(config, logger);
+const startedAt = new Date();
 
 if (config.db.migrateOnStart) {
   const { results } = await migrateToLatest(container.db);
@@ -44,11 +51,55 @@ if (config.reconciliation.intervalMs > 0) {
   );
 }
 
+const { kafka, eventRelay } = container;
+if (kafka !== undefined && eventRelay !== undefined && config.kafka !== undefined) {
+  await kafka.admin.connect();
+  await ensureTopics(
+    kafka.admin,
+    { requestedPartitions: config.kafka.requestedPartitions, resultPartitions: 3 },
+    TOPICS,
+  );
+  await kafka.producer.connect();
+  logger.info({ brokers: config.kafka.brokers, topics: TOPICS }, 'event bus connected');
+  tasks.push(
+    startPeriodicTask(
+      'event-relay',
+      config.kafka.relayIntervalMs,
+      async () => {
+        for (;;) {
+          const batch = await eventRelay.publishBatch();
+          if (batch.kind === 'idle') return;
+          container.metrics.eventsPublished.inc({ result: batch.kind }, batch.count);
+          if (batch.kind === 'failed') {
+            logger.warn({ event: 'event_relay.failed', ...batch }, 'publishing to the bus failed');
+            return;
+          }
+          logger.debug({ event: 'event_relay.published', count: batch.count }, 'events published');
+        }
+      },
+      logger,
+    ),
+  );
+}
+
+const heartbeat = () =>
+  container.registry.heartbeat({
+    id: config.instanceId,
+    kind: 'api',
+    startedAt,
+    now: new Date(),
+  });
+if (config.heartbeatIntervalMs > 0) {
+  await heartbeat();
+  tasks.push(startPeriodicTask('heartbeat', config.heartbeatIntervalMs, heartbeat, logger));
+}
+
 closeWithGrace({ delay: 10_000, logger }, async ({ signal, err }) => {
   if (err !== undefined) logger.error({ err }, 'shutting down after error');
   else logger.info({ signal }, 'shutting down');
   await Promise.all(tasks.map((t) => t.stop()));
   await app.close();
+  await container.registry.markStopped(config.instanceId, new Date()).catch(() => undefined);
   await container.dispose();
 });
 

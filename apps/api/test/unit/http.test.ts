@@ -1,4 +1,10 @@
-import { CopyTradeService, FollowerService, ReconciliationService } from '@copy-trade/application';
+import {
+  CopyTradeService,
+  FollowerService,
+  ReconciliationService,
+  TradeService,
+} from '@copy-trade/application';
+import { TOPICS } from '@copy-trade/contracts';
 import {
   FixedClock,
   immediateRetry,
@@ -33,6 +39,37 @@ async function setup(overrides: Partial<AppDeps> = {}) {
       stuckPendingThresholdMs: 60_000,
     }),
     readinessChecks: { database: () => Promise.resolve(true) },
+    trades: new TradeService({
+      unitOfWork: store,
+      reads: store,
+      clock,
+      ids,
+      retry: immediateRetry(),
+      requestedTopic: TOPICS.requested,
+      listLimit: 50,
+    }),
+    instanceId: 'api-test',
+    instances: {
+      list: () =>
+        Promise.resolve([
+          {
+            id: 'worker-1',
+            kind: 'worker' as const,
+            startedAt: clock.now(),
+            lastSeenAt: clock.now(),
+            stoppedAt: null,
+            alive: true,
+            partitions: [0, 3],
+          },
+        ]),
+    },
+    system: {
+      instanceId: 'api-test',
+      eventBus: true,
+      consoleUrl: 'http://localhost:8090',
+      consumerGroup: 'copy-trade-workers',
+      topics: { ...TOPICS },
+    },
     ...overrides,
   };
   app = await buildApp(deps);
@@ -49,11 +86,12 @@ const createFollower = async (
   balance: number,
   allocation: number,
   copyingEnabled = true,
+  traderIds: string[] = [],
 ) => {
   const res = await a.inject({
     method: 'POST',
     url: '/v1/followers',
-    payload: { balance, allocation, copyingEnabled },
+    payload: { balance, allocation, copyingEnabled, traderIds },
   });
   expect(res.statusCode).toBe(201);
   return res.json<{ id: string }>().id;
@@ -354,6 +392,122 @@ describe('HTTP API', () => {
     const res = await app.inject({ url: '/docs/json' });
     expect(res.json()).toMatchObject({
       paths: { '/v1/copy-trades': { post: expect.any(Object) as object } },
+    });
+  });
+
+  it('every response carries the serving replica in x-instance-id and the ledger row records it', async () => {
+    const { app } = await setup();
+    const followerId = await createFollower(app, 10_000, 2_000);
+    const res = await copy(app, {
+      trade: { id: 't-1', traderId: 'trader', amount: 700 },
+      followerId,
+    });
+
+    expect(res.headers['x-instance-id']).toBe('api-test');
+    expect(res.json()).toMatchObject({ followerTrade: { handledBy: 'api-test' } });
+    const health = await app.inject({ method: 'GET', url: '/health/live' });
+    expect(health.headers['x-instance-id']).toBe('api-test');
+  });
+
+  it('opens a trade: 202 with the fanned-out followers, 200 duplicate, 409 conflict, 400 invalid', async () => {
+    const { app, store } = await setup();
+    const subscribed = await createFollower(app, 1_000, 1_000, true, ['trader-x']);
+    await createFollower(app, 1_000, 1_000, true, ['someone-else']);
+    const open = (payload: object) => app.inject({ method: 'POST', url: '/v1/trades', payload });
+    const trade = { id: 'T1', traderId: 'trader-x', amount: 700 };
+
+    const accepted = await open(trade);
+    const duplicate = await open(trade);
+    const conflict = await open({ ...trade, amount: 5 });
+    const invalid = await open({ ...trade, id: 'T2', amount: 0 });
+
+    expect(accepted.statusCode).toBe(202);
+    expect(accepted.json()).toMatchObject({
+      outcome: 'accepted',
+      trade: { id: 'T1', traderId: 'trader-x', amount: 700 },
+      requestedFollowerIds: [subscribed],
+    });
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json()).toMatchObject({
+      outcome: 'duplicate',
+      requestedFollowerIds: [subscribed],
+    });
+    expect(conflict.statusCode).toBe(409);
+    expect(conflict.json()).toMatchObject({ outcome: 'trade_conflict', trade: { amount: 700 } });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json()).toMatchObject({ error: { code: 'INVALID_AMOUNT' } });
+    expect(store.events.size).toBe(1);
+  });
+
+  it('shows trade views, lists trades and forces redelivery', async () => {
+    const { app, store } = await setup();
+    const followerId = await createFollower(app, 1_000, 1_000, true, ['trader-x']);
+    await app.inject({
+      method: 'POST',
+      url: '/v1/trades',
+      payload: { id: 'T1', traderId: 'trader-x', amount: 700 },
+    });
+    const [event] = [...store.events.values()];
+    store.processedEvents.set(event!.eventId, {
+      eventId: event!.eventId,
+      tradeId: 'T1',
+      followerId,
+      outcome: 'copied',
+      reason: null,
+      followerTradeId: 'ft-1',
+      handledBy: 'worker-2',
+      source: { topic: TOPICS.requested, partition: 4, offset: '9' },
+      processedAt: new Date('2026-01-01T00:00:00.000Z'),
+    });
+
+    const view = await app.inject({ method: 'GET', url: '/v1/trades/T1' });
+    expect(view.statusCode).toBe(200);
+    expect(view.json()).toMatchObject({
+      trade: { id: 'T1' },
+      requests: [
+        {
+          followerId,
+          publishedAt: null,
+          processed: { outcome: 'copied', handledBy: 'worker-2', partition: 4, offset: '9' },
+        },
+      ],
+    });
+    const list = await app.inject({ method: 'GET', url: '/v1/trades' });
+    expect(list.json()).toMatchObject({ items: [{ trade: { id: 'T1' } }] });
+
+    const republish = await app.inject({ method: 'POST', url: '/v1/trades/T1/republish' });
+    expect(republish.statusCode).toBe(202);
+    expect(republish.json()).toEqual({ republished: 1 });
+    expect(store.events.size).toBe(2);
+
+    expect((await app.inject({ method: 'GET', url: '/v1/trades/nope' })).statusCode).toBe(404);
+    expect(
+      (await app.inject({ method: 'POST', url: '/v1/trades/nope/republish' })).statusCode,
+    ).toBe(404);
+  });
+
+  it('reports instances and system info for the operations UI', async () => {
+    const { app } = await setup();
+    const instances = await app.inject({ method: 'GET', url: '/v1/instances' });
+    expect(instances.json()).toEqual({
+      items: [
+        {
+          id: 'worker-1',
+          kind: 'worker',
+          startedAt: '2026-01-01T00:00:00.000Z',
+          lastSeenAt: '2026-01-01T00:00:00.000Z',
+          stoppedAt: null,
+          alive: true,
+          partitions: [0, 3],
+        },
+      ],
+    });
+    const system = await app.inject({ method: 'GET', url: '/v1/system' });
+    expect(system.json()).toMatchObject({
+      instanceId: 'api-test',
+      eventBus: true,
+      consoleUrl: 'http://localhost:8090',
+      topics: { requested: 'copy-trade.requested', deadLetter: 'copy-trade.requested.dlq' },
     });
   });
 });
