@@ -88,8 +88,14 @@ jobs:
           LOAD_REQUESTS=2000 pnpm load
           docker compose up -d --wait worker
           LOAD_REQUESTS=2000 pnpm load
-      - if: failure()
-        run: docker compose logs --no-color
+      - name: Dump compose state on failure
+        if: failure()
+        run: |
+          docker compose ps -a
+          docker compose logs --no-color
+          for c in $(docker compose ps -aq api worker); do
+            docker inspect --format '{{.Name}} {{json .State.Health}}' "$c"
+          done
       - uses: actions/upload-artifact@v4
         if: always()
         with:
