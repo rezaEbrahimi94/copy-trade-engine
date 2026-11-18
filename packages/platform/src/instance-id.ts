@@ -1,4 +1,4 @@
-import { lookup as dnsLookup } from 'node:dns/promises';
+import { Resolver } from 'node:dns/promises';
 import { hostname, networkInterfaces } from 'node:os';
 
 export interface ResolveInstanceIdOptions {
@@ -20,8 +20,11 @@ const ownIpv4Addresses = (): string[] =>
     .filter((a) => a.family === 'IPv4' && !a.internal)
     .map((a) => a.address);
 
-const lookupAll = async (name: string): Promise<string[]> =>
-  (await dnsLookup(name, { all: true, family: 4 })).map((a) => a.address);
+// c-ares, not getaddrinfo: `dns.lookup` runs on the 4-thread libuv pool and walks the host's
+// search domains, so 32 misses for replicas that do not exist can stall startup for minutes.
+const resolver = new Resolver({ timeout: 1000, tries: 2 });
+
+const lookupAll = (name: string): Promise<string[]> => resolver.resolve4(name);
 
 /**
  * Human-readable identity for a replica. With `docker compose --scale`, every replica shares

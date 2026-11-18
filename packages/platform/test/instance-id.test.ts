@@ -56,4 +56,15 @@ describe('resolveInstanceId', () => {
     const id = await resolveInstanceId({ configured: undefined, service: 'nope', maxReplicas: 1 });
     expect(typeof id).toBe('string');
   });
+
+  it('settles a full set of default lookups for missing replicas within a bounded time', async () => {
+    const started = Date.now();
+    const id = await resolveInstanceId({
+      configured: undefined,
+      service: 'no-such-service',
+      host: () => 'fallback',
+    });
+    expect(id).toBe('fallback');
+    expect(Date.now() - started).toBeLessThan(8000);
+  }, 15_000);
 });
